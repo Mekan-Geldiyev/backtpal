@@ -1,0 +1,14 @@
+use mss for screenshotting
+
+use vosk for the transcription while using PyAudio for "hearing" the voice commands and pyttsx3 can be used to 
+tell the user updates like "new trade created" or something like that
+
+
+general plan is that this mvp goes like this, the user says log new trade, and the bot automatically screenshots and attaches it
+to the trade in the database whether that's in notion or not 
+then the user says description to activate listening for the next things it says and then when they stop for 3s that gets added 
+into the description value of the trade, as for the instruments and things like that, we can just like have them set it up themselves
+like on the webpage if we have a button like start session and then the program starts listening you know, for that we could just 
+have it be like adding a backtesting session and they provide like the instrument and such, the mvp should be very basic and it's fine
+if there's not even a webpage but the webpage would be nice, we could do like a n8n to have it update the stuff in notion and such or 
+honestly we could just do it ourselves
