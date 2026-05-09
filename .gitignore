@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local model artifacts (optional to keep out of git)
+*.zip
+vosk-model-*/
+
+# IDE / OS
+.vscode/
+.DS_Store
+Thumbs.db
