@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import time
 import zipfile
@@ -7,7 +8,12 @@ from pathlib import Path
 import pyaudio
 import pyttsx3
 import requests
+from dotenv import load_dotenv
 from vosk import KaldiRecognizer, Model
+
+from notion_integration import NotionTradeLogger
+
+load_dotenv()
 
 MODEL_NAME = "vosk-model-small-en-us-0.15"
 MODEL_ZIP = f"{MODEL_NAME}.zip"
@@ -96,6 +102,19 @@ def listen_loop() -> None:
     model = Model(str(model_path))
     tts_engine = build_tts_engine()
 
+    # Initialize Notion integration if credentials are available
+    notion_logger = None
+    try:
+        api_token = os.getenv("NOTION_API_TOKEN")
+        database_id = os.getenv("NOTION_DATABASE_ID")
+        if api_token and database_id:
+            notion_logger = NotionTradeLogger(api_token, database_id)
+            print("✓ Connected to Notion")
+        else:
+            print("⚠ Notion credentials not configured (optional)")
+    except Exception as exc:
+        print(f"⚠ Could not connect to Notion: {exc}")
+
     audio = pyaudio.PyAudio()
 
     default_input = audio.get_default_input_device_info()
@@ -156,7 +175,24 @@ def listen_loop() -> None:
                         print("\n\nDescription complete:")
                         print(description)
                         speak(tts_engine, "Description captured")
-                        print("Ready to upload this description to Notion.")
+
+                        # Upload to Notion if configured
+                        if notion_logger:
+                            try:
+                                notion_logger.add_trade(
+                                    description=description,
+                                    symbol=os.getenv("TRADE_SYMBOL"),
+                                    account=os.getenv("TRADE_ACCOUNT"),
+                                    model=os.getenv("TRADE_MODEL"),
+                                    session=os.getenv("TRADE_SESSION"),
+                                )
+                                speak(tts_engine, "Trade logged to Notion")
+                            except Exception as exc:
+                                print(f"Failed to log trade to Notion: {exc}")
+                                speak(tts_engine, "Error uploading to Notion")
+                        else:
+                            print("Notion is not configured. Skipping upload.")
+
                         break
     except KeyboardInterrupt:
         print("\nStopped.")
