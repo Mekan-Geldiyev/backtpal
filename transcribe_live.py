@@ -23,18 +23,10 @@ MODEL_URL = f"https://alphacephei.com/vosk/models/{MODEL_ZIP}"
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = BASE_DIR / MODEL_NAME
 ZIP_PATH = BASE_DIR / MODEL_ZIP
-COMMAND_PHRASES = ("record description", "record descriptoin", "record_description")
-TITLE_PHRASES = ("record title", "record titel", "record_title")
-PROFIT_PHRASES = (
-    "record profit",
-    "record profits",
-    "record_profit",
-    "record pnl",
-    "record p and l",
-    "record profit and loss",
-    "record_pnl",
-)
-SILENCE_SECONDS = 4.0
+DESCRIPTION_COMMANDS = ("description", "descriptoin")
+TITLE_COMMANDS = ("title", "titel")
+PROFIT_COMMANDS = ("profit", "profits", "pnl", "p and l", "profit and loss")
+SILENCE_SECONDS = 2.0
 
 
 def download_file(url: str, out_path: Path) -> None:
@@ -142,17 +134,43 @@ def speak(engine: pyttsx3.Engine, text: str) -> None:
 
 def is_record_description_command(text: str) -> bool:
     normalized = " ".join(text.lower().split())
-    return any(phrase in normalized for phrase in COMMAND_PHRASES)
+    return any(re.search(rf"\b{re.escape(command)}\b", normalized) for command in DESCRIPTION_COMMANDS)
 
 
 def is_record_title_command(text: str) -> bool:
     normalized = " ".join(text.lower().split())
-    return any(phrase in normalized for phrase in TITLE_PHRASES)
+    return any(re.search(rf"\b{re.escape(command)}\b", normalized) for command in TITLE_COMMANDS)
 
 
 def is_record_profit_command(text: str) -> bool:
     normalized = " ".join(text.lower().split())
-    return any(phrase in normalized for phrase in PROFIT_PHRASES)
+    return any(re.search(rf"\b{re.escape(command)}\b", normalized) for command in PROFIT_COMMANDS)
+
+
+def is_meaningful_fragment(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return False
+
+    filler_words = {
+        "the",
+        "a",
+        "an",
+        "uh",
+        "um",
+        "hmm",
+        "mm",
+        "ah",
+        "er",
+        "yeah",
+        "okay",
+        "ok",
+    }
+    tokens = normalized.split()
+    if len(tokens) == 1 and tokens[0] in filler_words:
+        return False
+
+    return True
 
 
 def words_to_number(text: str) -> float | None:
@@ -289,7 +307,58 @@ def parse_spoken_profit(text: str) -> float | None:
     normalized = normalized.replace("dollar", " ")
     normalized = normalized.replace("bucks", " ")
     normalized = normalized.replace("usd", " ")
-    normalized = " ".join(normalized.split())
+    normalized = normalized.replace("pnl", " ")
+    normalized = normalized.replace("profit", " ")
+
+    allowed_words = {
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+        "thirty",
+        "forty",
+        "fifty",
+        "sixty",
+        "seventy",
+        "eighty",
+        "ninety",
+        "hundred",
+        "thousand",
+        "million",
+        "point",
+        "and",
+        "minus",
+        "negative",
+    }
+
+    filtered_tokens = []
+    for token in normalized.split():
+        if token in allowed_words:
+            filtered_tokens.append(token)
+            continue
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", token):
+            filtered_tokens.append(token)
+
+    normalized = " ".join(filtered_tokens)
+    if not normalized:
+        return None
 
     sign = 1
     if normalized.startswith("minus "):
@@ -299,7 +368,7 @@ def parse_spoken_profit(text: str) -> float | None:
         sign = -1
         normalized = normalized[len("negative ") :]
 
-    # Fast path: direct numeric content like "-125.5".
+    # Fast path: direct numeric content like -125.5.
     match = re.search(r"-?\d+(?:\.\d+)?", normalized)
     if not match:
         word_value = words_to_number(normalized)
@@ -374,9 +443,9 @@ def listen_loop() -> None:
     )
 
     print("\nAvailable commands:")
-    print("  - 'Record title'       : Capture the trade name")
-    print("  - 'Record description' : Capture why you took the trade")
-    print("  - 'Record profit'      : Capture numeric profit/loss")
+    print("  - 'title'       : Capture the trade name")
+    print("  - 'description' : Capture why you took the trade")
+    print("  - 'profit'      : Capture numeric profit/loss")
     print("\nPress Ctrl+C to stop.\n")
 
     try:
@@ -412,9 +481,12 @@ def listen_loop() -> None:
                         recognizer = KaldiRecognizer(model, sample_rate)
                         print("Recording profit... speak now (say a number).")
                 else:
-                    chunks.append(text)
-                    last_speech_time = time.monotonic()
-                    print(f"Final ({mode}): {text}")
+                    if is_meaningful_fragment(text):
+                        chunks.append(text)
+                        last_speech_time = time.monotonic()
+                        print(f"Final ({mode}): {text}")
+                    else:
+                        print(f"Ignored filler ({mode}): {text}")
             else:
                 partial = json.loads(recognizer.PartialResult()).get("partial", "").strip()
                 if mode == "command":
@@ -422,7 +494,8 @@ def listen_loop() -> None:
                         print(f"\rPartial (command): {partial:<80}", end="", flush=True)
                 else:
                     if partial:
-                        last_speech_time = time.monotonic()
+                        if is_meaningful_fragment(partial):
+                            last_speech_time = time.monotonic()
                         print(f"\rPartial ({mode}): {partial:<66}", end="", flush=True)
 
                     if chunks and (time.monotonic() - last_speech_time) >= SILENCE_SECONDS:
