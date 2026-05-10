@@ -71,14 +71,23 @@ def remove_model_artifacts() -> None:
         pass
 
 
+def resolve_model_dir(base_dir: Path) -> Path:
+    """Resolve common extraction layouts, including nested model folders."""
+    nested_dir = base_dir / MODEL_NAME
+    if nested_dir.exists() and nested_dir.is_dir():
+        return nested_dir
+    return base_dir
+
+
 def ensure_model(force_redownload: bool = False) -> Path:
     if force_redownload:
         print("Cleaning existing model artifacts for a fresh download...")
         remove_model_artifacts()
 
     if MODEL_DIR.exists() and not force_redownload:
+        resolved = resolve_model_dir(MODEL_DIR)
         print(f"Using model: {MODEL_NAME}")
-        return MODEL_DIR
+        return resolved
 
     print(f"Model not found. Downloading {MODEL_NAME}...")
     if MODEL_NAME == "vosk-model-en-us-0.22":
@@ -105,7 +114,7 @@ def ensure_model(force_redownload: bool = False) -> Path:
     if not MODEL_DIR.exists():
         raise RuntimeError("Model extraction failed. Could not find extracted model folder.")
 
-    return MODEL_DIR
+    return resolve_model_dir(MODEL_DIR)
 
 
 def build_tts_engine() -> pyttsx3.Engine:
@@ -312,10 +321,10 @@ def listen_loop() -> None:
             print("Loading Vosk model into memory...")
             model = Model(str(model_path))
             break
-        except (zipfile.BadZipFile, RuntimeError) as exc:
+        except Exception as exc:
             if retry_used:
                 raise RuntimeError(
-                    "Model download or extraction failed after retry. "
+                    "Model initialization failed after retry. "
                     "Please check your internet connection and disk space, then run again."
                 ) from exc
 
