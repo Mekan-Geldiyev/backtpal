@@ -21,7 +21,9 @@ MODEL_URL = f"https://alphacephei.com/vosk/models/{MODEL_ZIP}"
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = BASE_DIR / MODEL_NAME
 ZIP_PATH = BASE_DIR / MODEL_ZIP
-COMMAND_PHRASES = ("record description", "record descriptoin")
+COMMAND_PHRASES = ("record description", "record descriptoin", "record_description")
+TITLE_PHRASES = ("record title", "record titel", "record_title")
+PNL_PHRASES = ("record pnl", "record p and l", "record profit and loss", "record_pnl")
 SILENCE_SECONDS = 4.0
 
 
@@ -96,6 +98,16 @@ def is_record_description_command(text: str) -> bool:
     return any(phrase in normalized for phrase in COMMAND_PHRASES)
 
 
+def is_record_title_command(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    return any(phrase in normalized for phrase in TITLE_PHRASES)
+
+
+def is_record_pnl_command(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    return any(phrase in normalized for phrase in PNL_PHRASES)
+
+
 def listen_loop() -> None:
     model_path = ensure_model()
     print("Loading Vosk model into memory...")
@@ -126,8 +138,13 @@ def listen_loop() -> None:
 
     recognizer = KaldiRecognizer(model, sample_rate)
     mode = "command"
-    description_chunks: list[str] = []
+    chunks: list[str] = []
     last_speech_time = 0.0
+    
+    # Trade fields accumulated across recordings
+    trade_title = ""
+    trade_description = ""
+    trade_pnl = ""
 
     stream = audio.open(
         format=pyaudio.paInt16,
@@ -137,7 +154,11 @@ def listen_loop() -> None:
         frames_per_buffer=8000,
     )
 
-    print("\nSay 'Record description' to start. Press Ctrl+C to stop.\n")
+    print("\nAvailable commands:")
+    print("  - 'Record title'       : Capture the trade name")
+    print("  - 'Record description' : Capture why you took the trade")
+    print("  - 'Record pnl'         : Capture profit/loss info")
+    print("\nPress Ctrl+C to stop.\n")
 
     try:
         while True:
@@ -150,17 +171,31 @@ def listen_loop() -> None:
 
                 if mode == "command":
                     print(f"Final (command): {text}")
-                    if is_record_description_command(text):
-                        speak(tts_engine, "Recording description")
-                        mode = "recording"
-                        description_chunks = []
+                    if is_record_title_command(text):
+                        speak(tts_engine, "Recording trade title")
+                        mode = "recording_title"
+                        chunks = []
                         last_speech_time = time.monotonic()
                         recognizer = KaldiRecognizer(model, sample_rate)
-                        print("Recording... speak now.")
+                        print("Recording title... speak now.")
+                    elif is_record_description_command(text):
+                        speak(tts_engine, "Recording description")
+                        mode = "recording_description"
+                        chunks = []
+                        last_speech_time = time.monotonic()
+                        recognizer = KaldiRecognizer(model, sample_rate)
+                        print("Recording description... speak now.")
+                    elif is_record_pnl_command(text):
+                        speak(tts_engine, "Recording profit and loss")
+                        mode = "recording_pnl"
+                        chunks = []
+                        last_speech_time = time.monotonic()
+                        recognizer = KaldiRecognizer(model, sample_rate)
+                        print("Recording PNL... speak now.")
                 else:
-                    description_chunks.append(text)
+                    chunks.append(text)
                     last_speech_time = time.monotonic()
-                    print(f"Final (description): {text}")
+                    print(f"Final ({mode}): {text}")
             else:
                 partial = json.loads(recognizer.PartialResult()).get("partial", "").strip()
                 if mode == "command":
@@ -169,42 +204,74 @@ def listen_loop() -> None:
                 else:
                     if partial:
                         last_speech_time = time.monotonic()
-                        print(f"\rPartial (description): {partial:<66}", end="", flush=True)
+                        print(f"\rPartial ({mode}): {partial:<66}", end="", flush=True)
 
-                    if description_chunks and (time.monotonic() - last_speech_time) >= SILENCE_SECONDS:
-                        description = " ".join(description_chunks).strip()
-                        print("\n\nDescription complete:")
-                        print(description)
-                        speak(tts_engine, "Description captured")
+                    if chunks and (time.monotonic() - last_speech_time) >= SILENCE_SECONDS:
+                        captured = " ".join(chunks).strip()
+                        
+                        if mode == "recording_title":
+                            trade_title = captured
+                            print(f"\n\nTitle captured: {trade_title}")
+                            speak(tts_engine, "Title saved")
+                        elif mode == "recording_description":
+                            trade_description = captured
+                            print(f"\n\nDescription captured: {trade_description}")
+                            speak(tts_engine, "Description saved")
+                        elif mode == "recording_pnl":
+                            trade_pnl = captured
+                            print(f"\n\nPNL captured: {trade_pnl}")
+                            speak(tts_engine, "PNL saved")
 
-                        # Upload to Notion if configured
-                        if notion_logger:
-                            try:
-                                result = notion_logger.add_trade(
-                                    description=description,
-                                    symbol=os.getenv("TRADE_SYMBOL"),
-                                    account=os.getenv("TRADE_ACCOUNT"),
-                                    model=os.getenv("TRADE_MODEL"),
-                                    session=os.getenv("TRADE_SESSION"),
-                                )
-                                speak(tts_engine, "Trade logged to Notion")
-                                
-                                # Display the Notion URL
-                                notion_url = result.get("notion_url")
-                                if notion_url:
-                                    print(f"✓ Trade page: {notion_url}")
-
-                            except Exception as exc:
-                                print(f"Failed to log trade to Notion: {exc}")
-                                speak(tts_engine, "Error uploading to Notion")
-                        else:
-                            print("Notion is not configured. Skipping upload.")
-
+                        # Reset for next command
                         mode = "command"
-                        description_chunks = []
+                        chunks = []
                         recognizer = KaldiRecognizer(model, sample_rate)
                         last_speech_time = 0.0
-                        print("\nReady for the next trade. Say 'Record description' to start again.\n")
+
+                        # Check if all fields are filled and ready to upload
+                        if trade_title and trade_description and trade_pnl:
+                            print("\n✓ All fields captured. Uploading to Notion...")
+                            if notion_logger:
+                                try:
+                                    result = notion_logger.add_trade(
+                                        title=trade_title,
+                                        description=trade_description,
+                                        pnl=trade_pnl,
+                                        symbol=os.getenv("TRADE_SYMBOL"),
+                                        account=os.getenv("TRADE_ACCOUNT"),
+                                        model=os.getenv("TRADE_MODEL"),
+                                        session=os.getenv("TRADE_SESSION"),
+                                    )
+                                    speak(tts_engine, "Trade logged to Notion")
+                                    
+                                    # Display the Notion URL
+                                    notion_url = result.get("notion_url")
+                                    if notion_url:
+                                        print(f"✓ Trade page: {notion_url}")
+
+                                    # Reset fields for next trade
+                                    trade_title = ""
+                                    trade_description = ""
+                                    trade_pnl = ""
+                                    
+                                except Exception as exc:
+                                    print(f"Failed to log trade to Notion: {exc}")
+                                    speak(tts_engine, "Error uploading to Notion")
+                            else:
+                                print("Notion is not configured. Trade data captured but not uploaded.")
+                                # Reset fields for next trade
+                                trade_title = ""
+                                trade_description = ""
+                                trade_pnl = ""
+                        else:
+                            remaining = []
+                            if not trade_title:
+                                remaining.append("title")
+                            if not trade_description:
+                                remaining.append("description")
+                            if not trade_pnl:
+                                remaining.append("PNL")
+                            print(f"\nReady for next step. Still need: {', '.join(remaining)}\n")
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:

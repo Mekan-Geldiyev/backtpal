@@ -69,14 +69,16 @@ python transcribe_live.py
 On first run, the script downloads this model automatically:
 - `vosk-model-small-en-us-0.15`
 
-Then it starts listening for the command:
+Then it starts listening for the commands:
+- `Record title`
 - `Record description`
+- `Record pnl`
 
 When command is detected:
-- Local TTS (pyttsx3) says: `Recording description`
-- Your speech is captured as description text
+- Local TTS (pyttsx3) confirms which field is being recorded
+- Your speech is captured into that field
 - After 4 seconds of silence, recording stops automatically
-- The full assembled description is printed
+- Once `title`, `description`, and `pnl` are all captured, the trade is uploaded to Notion
 - **If Notion is configured**, the trade is automatically added as a row in your Trades database
 - TTS confirms: `Trade logged to Notion`
 - The app stays running so you can record the next trade without restarting

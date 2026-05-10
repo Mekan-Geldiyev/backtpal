@@ -156,20 +156,21 @@ class NotionTradeLogger:
 
     def add_trade(
         self,
+        title: str,
         description: str,
         symbol: Optional[str] = None,
         account: Optional[str] = None,
         model: Optional[str] = None,
         session: Optional[str] = None,
         entry_timeframe: Optional[str] = None,
+        pnl: Optional[str] = None,
         screenshots: Optional[list] = None,
     ) -> dict[str, Any]:
         del screenshots
 
         today_date = datetime.now().strftime("%Y-%m-%d")
-        trade_title = description[:80] if len(description) > 80 else description
         title_property = self._get_title_property_name()
-        outcome_label, rr_value = self._infer_trade_outcome(description)
+        outcome_label, rr_value = self._infer_trade_outcome(pnl or description)
 
         field_values = {
             "account": account,
@@ -189,14 +190,14 @@ class NotionTradeLogger:
             "session": ["Session"],
             "entry_timeframe": ["Entry Timeframe", "Timeframe"],
             "entry_exit_date": ["Entry / Exit Date", "Entry/Exit Date", "Entry Exit Date", "Entry Date"],
-            "why": ["Why I took this trade", "Why I Took This Trade", "Narrative", "Why", "Notes"],
+            "why": ["Why I took this trade", "Why I Took This Trade", "Why", "Notes"],
             "status": ["Status"],
             "actual_rr_achieved": ["Actual RR Achieved", "Actual RR", "RR Achieved"],
         }
 
         properties: dict[str, Any] = {
             title_property: {
-                "title": [{"type": "text", "text": {"content": trade_title}}]
+                "title": [{"type": "text", "text": {"content": title}}]
             }
         }
 

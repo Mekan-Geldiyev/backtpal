@@ -313,7 +313,7 @@ def test_notion_connection():
         "model": ["Model"],
         "symbol": ["Symbol"],
         "entry_exit_date": ["Entry / Exit Date", "Entry/Exit Date", "Entry Exit Date", "Entry Date"],
-        "why": ["Why I took this trade", "Why I Took This Trade", "Narrative", "Why", "Notes"],
+        "why": ["Why I took this trade", "Why I Took This Trade", "Why", "Notes"],
     }
 
     extra_properties = {}
