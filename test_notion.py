@@ -224,6 +224,7 @@ def create_trade_row(
     title_property: str,
     trade_title: str,
     extra_properties: dict,
+    description: str | None = None,
 ) -> dict:
     """Create one page row in the selected Trades database."""
     headers = build_headers(api_token)
@@ -239,6 +240,24 @@ def create_trade_row(
         "parent": {"database_id": database_id},
         "properties": row_properties,
     }
+
+    if description:
+        payload["children"] = [
+            {
+                "object": "block",
+                "type": "heading_3",
+                "heading_3": {
+                    "rich_text": [{"type": "text", "text": {"content": "Description"}}]
+                },
+            },
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": description}}]
+                },
+            },
+        ]
 
     response = requests.post(
         "https://api.notion.com/v1/pages",
@@ -300,12 +319,15 @@ def test_notion_connection():
         return False
 
     today_date = datetime.now().strftime("%Y-%m-%d")
+    test_description = (
+        "Test description field: quick NQ scalp after reclaim of VWAP and acceptance above prior high. "
+        "Managed risk tightly and took profit into resistance."
+    )
     fillers = {
         "account": "integrationtest",
         "model": "s/r",
         "symbol": "MNQ!",
         "entry_exit_date": today_date,
-        "why": "Integration test entry: validating Notion row creation from BackTPal.",
     }
 
     prop_candidates = {
@@ -313,7 +335,6 @@ def test_notion_connection():
         "model": ["Model"],
         "symbol": ["Symbol"],
         "entry_exit_date": ["Entry / Exit Date", "Entry/Exit Date", "Entry Exit Date", "Entry Date"],
-        "why": ["Why I took this trade", "Why I Took This Trade", "Why", "Notes"],
     }
 
     extra_properties = {}
@@ -357,6 +378,7 @@ def test_notion_connection():
             title_property=title_property,
             trade_title=test_trade_name,
             extra_properties=extra_properties,
+            description=test_description,
         )
 
         print("   ✓ Trade row created successfully!")

@@ -455,6 +455,7 @@ def listen_loop() -> None:
                         # Check if all fields are filled and ready to upload
                         if trade_title and trade_description and trade_profit is not None:
                             print("\n✓ All fields captured. Uploading to Notion...")
+                            print("Description will be saved in the page body under the 'Description' section.")
                             if notion_logger:
                                 try:
                                     result = notion_logger.add_trade(

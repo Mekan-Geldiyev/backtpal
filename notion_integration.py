@@ -138,8 +138,20 @@ class NotionTradeLogger:
         related_page_id = self._ensure_relation_page(relation_db_id, value)
         return {"relation": [{"id": related_page_id}]}
 
-    def _infer_trade_outcome(self, description: str) -> tuple[Optional[str], Optional[int]]:
-        lowered = description.lower()
+    def _infer_trade_outcome(
+        self,
+        description: str,
+        profit: Optional[float] = None,
+        profit_text: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[int]]:
+        if profit is not None:
+            if profit > 0:
+                return "win", 1
+            if profit < 0:
+                return "loss", -1
+            return "breakeven", 0
+
+        lowered = (profit_text or description).lower()
         win_count = len(re.findall(r"\b(win|won|winner)\b", lowered))
         loss_count = len(re.findall(r"\b(lose|loss|lost)\b", lowered))
         breakeven_count = len(re.findall(r"\b(breakeven|break[ -]?even)\b", lowered))
@@ -163,6 +175,7 @@ class NotionTradeLogger:
         model: Optional[str] = None,
         session: Optional[str] = None,
         entry_timeframe: Optional[str] = None,
+        profit: Optional[float] = None,
         pnl: Optional[str] = None,
         screenshots: Optional[list] = None,
     ) -> dict[str, Any]:
@@ -170,7 +183,11 @@ class NotionTradeLogger:
 
         today_date = datetime.now().strftime("%Y-%m-%d")
         title_property = self._get_title_property_name()
-        outcome_label, rr_value = self._infer_trade_outcome(pnl or description)
+        outcome_label, rr_value = self._infer_trade_outcome(
+            description=description,
+            profit=profit,
+            profit_text=pnl,
+        )
 
         field_values = {
             "account": account,
@@ -179,7 +196,7 @@ class NotionTradeLogger:
             "session": session,
             "entry_timeframe": entry_timeframe,
             "entry_exit_date": today_date,
-            "why": description,
+            "profit": profit,
             "status": "Closed",
             "actual_rr_achieved": rr_value,
         }
@@ -190,7 +207,7 @@ class NotionTradeLogger:
             "session": ["Session"],
             "entry_timeframe": ["Entry Timeframe", "Timeframe"],
             "entry_exit_date": ["Entry / Exit Date", "Entry/Exit Date", "Entry Exit Date", "Entry Date"],
-            "why": ["Why I took this trade", "Why I Took This Trade", "Why", "Notes"],
+            "profit": ["Profit", "P/L", "PNL", "Pnl", "Profit/Loss"],
             "status": ["Status"],
             "actual_rr_achieved": ["Actual RR Achieved", "Actual RR", "RR Achieved"],
         }
@@ -236,6 +253,32 @@ class NotionTradeLogger:
         payload = {
             "parent": {"database_id": self.database_id},
             "properties": properties,
+            "children": [
+                {
+                    "object": "block",
+                    "type": "heading_3",
+                    "heading_3": {
+                        "rich_text": [
+                            {
+                                "type": "text",
+                                "text": {"content": "Description"},
+                            }
+                        ]
+                    },
+                },
+                {
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [
+                            {
+                                "type": "text",
+                                "text": {"content": description},
+                            }
+                        ]
+                    },
+                },
+            ],
         }
 
         try:
