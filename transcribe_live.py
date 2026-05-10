@@ -11,7 +11,7 @@ import requests
 from dotenv import load_dotenv
 from vosk import KaldiRecognizer, Model
 
-from notion_integration import NotionTradeLogger
+from notion_integration import NotionTradeLogger, load_notion_credentials
 
 load_dotenv()
 
@@ -105,13 +105,14 @@ def listen_loop() -> None:
     # Initialize Notion integration if credentials are available
     notion_logger = None
     try:
-        api_token = os.getenv("NOTION_API_TOKEN")
-        database_id = os.getenv("NOTION_DATABASE_ID")
+        api_token, database_id = load_notion_credentials()
         if api_token and database_id:
             notion_logger = NotionTradeLogger(api_token, database_id)
             print("✓ Connected to Notion")
         else:
             print("⚠ Notion credentials not configured (optional)")
+    except ValueError:
+        print("⚠ Notion credentials not configured (optional)")
     except Exception as exc:
         print(f"⚠ Could not connect to Notion: {exc}")
 
@@ -179,7 +180,7 @@ def listen_loop() -> None:
                         # Upload to Notion if configured
                         if notion_logger:
                             try:
-                                notion_logger.add_trade(
+                                result = notion_logger.add_trade(
                                     description=description,
                                     symbol=os.getenv("TRADE_SYMBOL"),
                                     account=os.getenv("TRADE_ACCOUNT"),
@@ -187,13 +188,23 @@ def listen_loop() -> None:
                                     session=os.getenv("TRADE_SESSION"),
                                 )
                                 speak(tts_engine, "Trade logged to Notion")
+                                
+                                # Display the Notion URL
+                                notion_url = result.get("notion_url")
+                                if notion_url:
+                                    print(f"✓ Trade page: {notion_url}")
+
                             except Exception as exc:
                                 print(f"Failed to log trade to Notion: {exc}")
                                 speak(tts_engine, "Error uploading to Notion")
                         else:
                             print("Notion is not configured. Skipping upload.")
 
-                        break
+                        mode = "command"
+                        description_chunks = []
+                        recognizer = KaldiRecognizer(model, sample_rate)
+                        last_speech_time = 0.0
+                        print("\nReady for the next trade. Say 'Record description' to start again.\n")
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:

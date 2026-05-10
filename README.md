@@ -28,7 +28,7 @@ pip install vosk requests python-dotenv
 
 ## 3) Configure Notion Integration (Optional)
 
-To automatically log trades to your Notion journal:
+To automatically log trades into your Trades database:
 
 1. **Get your Notion API token:**
    - Go to https://www.notion.so/my-integrations
@@ -36,9 +36,9 @@ To automatically log trades to your Notion journal:
    - Name it "BackTPal"
    - Copy your API token (starts with `ntn_`)
 
-2. **Find your database ID:**
-   - Open your Trader's Master Journal in Notion
-   - Copy the URL: `https://notion.so/{DATABASE_ID}?v=...`
+2. **Find your Trades database ID:**
+   - Open your Trades database in Notion
+   - Copy the URL: `https://www.notion.so/{DATABASE_ID}?v=...`
    - Extract the `DATABASE_ID` part
 
 3. **Set up environment variables:**
@@ -49,16 +49,16 @@ To automatically log trades to your Notion journal:
    - Edit `.env` and fill in:
      ```
      NOTION_API_TOKEN=ntn_your_token_here
-     NOTION_DATABASE_ID=your_database_id_here
+   NOTION_TRADES_DATABASE_ID=26fc63a3815e8108bbafdf6bd8bc7d4c
+   TRADE_SYMBOL=MNQ!
      TRADE_ACCOUNT=YourAccount
      TRADE_MODEL=YourStrategy
      TRADE_SESSION=YourSession
      ```
 
 4. **Share your database with BackTPal:**
-   - In Notion, go to your journal database
-   - Click the "Connections" icon (top right)
-   - Click "Add connection" and select your "BackTPal" integration
+   - Open the Trades database in Notion
+   - Add the BackTPal integration to that database/page
 
 ## 4) Run voice command flow
 
@@ -77,8 +77,9 @@ When command is detected:
 - Your speech is captured as description text
 - After 4 seconds of silence, recording stops automatically
 - The full assembled description is printed
-- **If Notion is configured**, the trade is automatically added to your journal
+- **If Notion is configured**, the trade is automatically added as a row in your Trades database
 - TTS confirms: `Trade logged to Notion`
+- The app stays running so you can record the next trade without restarting
 
 Press `Ctrl+C` to stop.
 
@@ -87,7 +88,14 @@ Press `Ctrl+C` to stop.
 1. **Voice Command Recognition**: Listens for "Record description" using offline Vosk STT
 2. **Local Text-to-Speech**: Uses pyttsx3 (Windows SAPI5 or eSpeak) for confirmations
 3. **Automatic Silence Detection**: 4-second silence triggers end of recording
-4. **Notion Integration**: Uploads description and trade metadata to your journal (optional)
+4. **Notion Integration**: Creates rows in your Trades database and fills fields like Account, Model, Symbol, Session, Entry / Exit Date, Narrative, and Actual RR Achieved when those properties exist
+
+## Outcome Parsing
+
+BackTPal counts outcome words in the spoken description:
+- More `win` words than `loss` words sets `Actual RR Achieved` to `1`
+- More `loss`, `lose`, or `lost` words sets it to `-1`
+- `breakeven` sets it to `0` when it wins the word count check
 
 
 ## Notes
