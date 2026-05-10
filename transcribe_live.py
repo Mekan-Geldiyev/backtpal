@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import sys
 import time
 import zipfile
@@ -57,8 +58,25 @@ def download_file(url: str, out_path: Path) -> None:
         print("\rDownloading model... 100%")
 
 
-def ensure_model() -> Path:
-    if MODEL_DIR.exists():
+def remove_model_artifacts() -> None:
+    try:
+        if MODEL_DIR.exists():
+            shutil.rmtree(MODEL_DIR)
+    except OSError:
+        pass
+
+    try:
+        ZIP_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def ensure_model(force_redownload: bool = False) -> Path:
+    if force_redownload:
+        print("Cleaning existing model artifacts for a fresh download...")
+        remove_model_artifacts()
+
+    if MODEL_DIR.exists() and not force_redownload:
         print(f"Using model: {MODEL_NAME}")
         return MODEL_DIR
 
@@ -68,8 +86,16 @@ def ensure_model() -> Path:
     download_file(MODEL_URL, ZIP_PATH)
 
     print("Extracting model...")
-    with zipfile.ZipFile(ZIP_PATH, "r") as zf:
-        zf.extractall(BASE_DIR)
+    try:
+        with zipfile.ZipFile(ZIP_PATH, "r") as zf:
+            bad_file = zf.testzip()
+            if bad_file is not None:
+                raise zipfile.BadZipFile(f"CRC check failed for {bad_file}")
+            zf.extractall(BASE_DIR)
+    except (zipfile.BadZipFile, RuntimeError):
+        print("Downloaded model archive appears corrupted. Retrying with a clean download...")
+        remove_model_artifacts()
+        raise
 
     try:
         ZIP_PATH.unlink(missing_ok=True)
@@ -279,9 +305,23 @@ def parse_spoken_profit(text: str) -> float | None:
 
 
 def listen_loop() -> None:
-    model_path = ensure_model()
-    print("Loading Vosk model into memory...")
-    model = Model(str(model_path))
+    retry_used = False
+    while True:
+        try:
+            model_path = ensure_model(force_redownload=retry_used)
+            print("Loading Vosk model into memory...")
+            model = Model(str(model_path))
+            break
+        except (zipfile.BadZipFile, RuntimeError) as exc:
+            if retry_used:
+                raise RuntimeError(
+                    "Model download or extraction failed after retry. "
+                    "Please check your internet connection and disk space, then run again."
+                ) from exc
+
+            print(f"Model initialization failed: {exc}")
+            print("Retrying model download and load one time...")
+            retry_used = True
     tts_engine = build_tts_engine()
 
     # Initialize Notion integration if credentials are available
