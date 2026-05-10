@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import time
 import zipfile
@@ -15,7 +16,7 @@ from notion_integration import NotionTradeLogger, load_notion_credentials
 
 load_dotenv()
 
-MODEL_NAME = "vosk-model-small-en-us-0.15"
+MODEL_NAME = os.getenv("VOSK_MODEL_NAME", "vosk-model-en-us-0.22")
 MODEL_ZIP = f"{MODEL_NAME}.zip"
 MODEL_URL = f"https://alphacephei.com/vosk/models/{MODEL_ZIP}"
 BASE_DIR = Path(__file__).resolve().parent
@@ -23,16 +24,24 @@ MODEL_DIR = BASE_DIR / MODEL_NAME
 ZIP_PATH = BASE_DIR / MODEL_ZIP
 COMMAND_PHRASES = ("record description", "record descriptoin", "record_description")
 TITLE_PHRASES = ("record title", "record titel", "record_title")
-PNL_PHRASES = ("record pnl", "record p and l", "record profit and loss", "record_pnl")
+PROFIT_PHRASES = (
+    "record profit",
+    "record profits",
+    "record_profit",
+    "record pnl",
+    "record p and l",
+    "record profit and loss",
+    "record_pnl",
+)
 SILENCE_SECONDS = 4.0
 
 
 def download_file(url: str, out_path: Path) -> None:
-    with requests.get(url, stream=True, timeout=60) as response:
+    with requests.get(url, stream=True, timeout=300) as response:
         response.raise_for_status()
         total = int(response.headers.get("content-length", 0))
         downloaded = 0
-        chunk_size = 1024 * 64
+        chunk_size = 1024 * 1024
 
         with out_path.open("wb") as file:
             for chunk in response.iter_content(chunk_size=chunk_size):
@@ -50,9 +59,12 @@ def download_file(url: str, out_path: Path) -> None:
 
 def ensure_model() -> Path:
     if MODEL_DIR.exists():
+        print(f"Using model: {MODEL_NAME}")
         return MODEL_DIR
 
     print(f"Model not found. Downloading {MODEL_NAME}...")
+    if MODEL_NAME == "vosk-model-en-us-0.22":
+        print("This is the full-size model (~1.8GB). First download can take a while.")
     download_file(MODEL_URL, ZIP_PATH)
 
     print("Extracting model...")
@@ -103,9 +115,167 @@ def is_record_title_command(text: str) -> bool:
     return any(phrase in normalized for phrase in TITLE_PHRASES)
 
 
-def is_record_pnl_command(text: str) -> bool:
+def is_record_profit_command(text: str) -> bool:
     normalized = " ".join(text.lower().split())
-    return any(phrase in normalized for phrase in PNL_PHRASES)
+    return any(phrase in normalized for phrase in PROFIT_PHRASES)
+
+
+def words_to_number(text: str) -> float | None:
+    """Convert spoken number words into a numeric value."""
+    units = {
+        "zero": 0,
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+        "eleven": 11,
+        "twelve": 12,
+        "thirteen": 13,
+        "fourteen": 14,
+        "fifteen": 15,
+        "sixteen": 16,
+        "seventeen": 17,
+        "eighteen": 18,
+        "nineteen": 19,
+    }
+    tens = {
+        "twenty": 20,
+        "thirty": 30,
+        "forty": 40,
+        "fifty": 50,
+        "sixty": 60,
+        "seventy": 70,
+        "eighty": 80,
+        "ninety": 90,
+    }
+    scales = {"hundred": 100, "thousand": 1000, "million": 1000000}
+
+    tokens = [t for t in text.lower().replace("-", " ").split() if t]
+    if not tokens:
+        return None
+
+    sign = 1
+    if tokens and tokens[0] in {"minus", "negative"}:
+        sign = -1
+        tokens = tokens[1:]
+
+    # Handle digit-like sequences spoken as individual numbers: "one two eight nine" -> 1289.
+    if tokens and all(token in units and units[token] < 10 for token in tokens):
+        return float(sign * int("".join(str(units[token]) for token in tokens)))
+
+    # Handle compact hundreds style: "two eighty five" -> 285.
+    if len(tokens) == 3 and tokens[0] in units and units[tokens[0]] < 10:
+        first = units[tokens[0]]
+        tail = 0
+        if tokens[1] in tens and tokens[2] in units and units[tokens[2]] < 10:
+            tail = tens[tokens[1]] + units[tokens[2]]
+            return float(sign * (first * 100 + tail))
+
+    total = 0
+    current = 0
+    used = False
+    i = 0
+
+    while i < len(tokens):
+        token = tokens[i]
+
+        if token == "and":
+            i += 1
+            continue
+
+        if token in units:
+            current += units[token]
+            used = True
+            i += 1
+            continue
+
+        if token in tens:
+            current += tens[token]
+            used = True
+            i += 1
+            continue
+
+        if token == "point":
+            frac_digits = []
+            for frac_token in tokens[i + 1 :]:
+                if frac_token in units and units[frac_token] < 10:
+                    frac_digits.append(str(units[frac_token]))
+                elif frac_token.isdigit():
+                    frac_digits.append(frac_token)
+                else:
+                    break
+
+            if not frac_digits:
+                return None
+
+            base = total + current
+            return sign * float(f"{base}.{''.join(frac_digits)}")
+
+        if token in scales:
+            scale = scales[token]
+            if token == "hundred":
+                if current == 0:
+                    current = 1
+                current *= scale
+            else:
+                if current == 0:
+                    current = 1
+                total += current * scale
+                current = 0
+            used = True
+            i += 1
+            continue
+
+        if token.isdigit():
+            current += int(token)
+            used = True
+            i += 1
+            continue
+
+        return None
+
+    if not used:
+        return None
+
+    return float(sign * (total + current))
+
+
+def parse_spoken_profit(text: str) -> float | None:
+    normalized = text.lower()
+    normalized = normalized.replace(",", " ")
+    normalized = normalized.replace("$", " ")
+    normalized = normalized.replace("dollars", " ")
+    normalized = normalized.replace("dollar", " ")
+    normalized = normalized.replace("bucks", " ")
+    normalized = normalized.replace("usd", " ")
+    normalized = " ".join(normalized.split())
+
+    sign = 1
+    if normalized.startswith("minus "):
+        sign = -1
+        normalized = normalized[len("minus ") :]
+    elif normalized.startswith("negative "):
+        sign = -1
+        normalized = normalized[len("negative ") :]
+
+    # Fast path: direct numeric content like "-125.5".
+    match = re.search(r"-?\d+(?:\.\d+)?", normalized)
+    if not match:
+        word_value = words_to_number(normalized)
+        if word_value is None:
+            return None
+        return float(sign * word_value)
+
+    numeric = float(match.group(0))
+    if sign == -1 and numeric > 0:
+        numeric = -numeric
+    return numeric
 
 
 def listen_loop() -> None:
@@ -144,7 +314,7 @@ def listen_loop() -> None:
     # Trade fields accumulated across recordings
     trade_title = ""
     trade_description = ""
-    trade_pnl = ""
+    trade_profit: float | None = None
 
     stream = audio.open(
         format=pyaudio.paInt16,
@@ -157,7 +327,7 @@ def listen_loop() -> None:
     print("\nAvailable commands:")
     print("  - 'Record title'       : Capture the trade name")
     print("  - 'Record description' : Capture why you took the trade")
-    print("  - 'Record pnl'         : Capture profit/loss info")
+    print("  - 'Record profit'      : Capture numeric profit/loss")
     print("\nPress Ctrl+C to stop.\n")
 
     try:
@@ -185,13 +355,13 @@ def listen_loop() -> None:
                         last_speech_time = time.monotonic()
                         recognizer = KaldiRecognizer(model, sample_rate)
                         print("Recording description... speak now.")
-                    elif is_record_pnl_command(text):
-                        speak(tts_engine, "Recording profit and loss")
-                        mode = "recording_pnl"
+                    elif is_record_profit_command(text):
+                        speak(tts_engine, "Recording profit")
+                        mode = "recording_profit"
                         chunks = []
                         last_speech_time = time.monotonic()
                         recognizer = KaldiRecognizer(model, sample_rate)
-                        print("Recording PNL... speak now.")
+                        print("Recording profit... speak now (say a number).")
                 else:
                     chunks.append(text)
                     last_speech_time = time.monotonic()
@@ -217,10 +387,15 @@ def listen_loop() -> None:
                             trade_description = captured
                             print(f"\n\nDescription captured: {trade_description}")
                             speak(tts_engine, "Description saved")
-                        elif mode == "recording_pnl":
-                            trade_pnl = captured
-                            print(f"\n\nPNL captured: {trade_pnl}")
-                            speak(tts_engine, "PNL saved")
+                        elif mode == "recording_profit":
+                            parsed_profit = parse_spoken_profit(captured)
+                            if parsed_profit is None:
+                                print("\n\nCould not parse profit as a number. Try again with digits, for example minus 150 or 220.5")
+                                speak(tts_engine, "Could not parse profit as a number")
+                            else:
+                                trade_profit = parsed_profit
+                                print(f"\n\nProfit captured: {trade_profit}")
+                                speak(tts_engine, "Profit saved")
 
                         # Reset for next command
                         mode = "command"
@@ -229,14 +404,14 @@ def listen_loop() -> None:
                         last_speech_time = 0.0
 
                         # Check if all fields are filled and ready to upload
-                        if trade_title and trade_description and trade_pnl:
+                        if trade_title and trade_description and trade_profit is not None:
                             print("\n✓ All fields captured. Uploading to Notion...")
                             if notion_logger:
                                 try:
                                     result = notion_logger.add_trade(
                                         title=trade_title,
                                         description=trade_description,
-                                        pnl=trade_pnl,
+                                        profit=trade_profit,
                                         symbol=os.getenv("TRADE_SYMBOL"),
                                         account=os.getenv("TRADE_ACCOUNT"),
                                         model=os.getenv("TRADE_MODEL"),
@@ -252,7 +427,7 @@ def listen_loop() -> None:
                                     # Reset fields for next trade
                                     trade_title = ""
                                     trade_description = ""
-                                    trade_pnl = ""
+                                    trade_profit = None
                                     
                                 except Exception as exc:
                                     print(f"Failed to log trade to Notion: {exc}")
@@ -262,15 +437,15 @@ def listen_loop() -> None:
                                 # Reset fields for next trade
                                 trade_title = ""
                                 trade_description = ""
-                                trade_pnl = ""
+                                trade_profit = None
                         else:
                             remaining = []
                             if not trade_title:
                                 remaining.append("title")
                             if not trade_description:
                                 remaining.append("description")
-                            if not trade_pnl:
-                                remaining.append("PNL")
+                            if trade_profit is None:
+                                remaining.append("profit")
                             print(f"\nReady for next step. Still need: {', '.join(remaining)}\n")
     except KeyboardInterrupt:
         print("\nStopped.")

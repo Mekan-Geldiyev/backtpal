@@ -67,18 +67,23 @@ python transcribe_live.py
 ```
 
 On first run, the script downloads this model automatically:
-- `vosk-model-small-en-us-0.15`
+- `vosk-model-en-us-0.22` (full model, ~1.8GB)
+
+Optional: use a different model by setting `VOSK_MODEL_NAME` in `.env`, for example:
+```
+VOSK_MODEL_NAME=vosk-model-en-us-0.22
+```
 
 Then it starts listening for the commands:
 - `Record title`
 - `Record description`
-- `Record pnl`
+- `Record profit`
 
 When command is detected:
 - Local TTS (pyttsx3) confirms which field is being recorded
 - Your speech is captured into that field
 - After 4 seconds of silence, recording stops automatically
-- Once `title`, `description`, and `pnl` are all captured, the trade is uploaded to Notion
+- Once `title`, `description`, and numeric `profit` are all captured, the trade is uploaded to Notion
 - **If Notion is configured**, the trade is automatically added as a row in your Trades database
 - TTS confirms: `Trade logged to Notion`
 - The app stays running so you can record the next trade without restarting
@@ -94,10 +99,12 @@ Press `Ctrl+C` to stop.
 
 ## Outcome Parsing
 
-BackTPal counts outcome words in the spoken description:
-- More `win` words than `loss` words sets `Actual RR Achieved` to `1`
-- More `loss`, `lose`, or `lost` words sets it to `-1`
-- `breakeven` sets it to `0` when it wins the word count check
+BackTPal sets outcome and RR from profit first:
+- Profit > `0` sets `Actual RR Achieved` to `1`
+- Profit < `0` sets it to `-1`
+- Profit = `0` sets it to `0`
+
+If profit is not available, it falls back to word counting (`win`, `loss`, `breakeven`).
 
 
 ## Notes
