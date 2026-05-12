@@ -12,6 +12,7 @@ env/
 # Local model artifacts (optional to keep out of git)
 *.zip
 vosk-model-*/
+screenshots/
 
 # IDE / OS
 .vscode/

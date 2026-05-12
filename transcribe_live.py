@@ -7,6 +7,7 @@ import time
 import zipfile
 from pathlib import Path
 
+import mss
 import pyaudio
 import pyttsx3
 import requests
@@ -27,6 +28,7 @@ DESCRIPTION_COMMANDS = ("description", "descriptoin")
 TITLE_COMMANDS = ("title", "titel")
 PROFIT_COMMANDS = ("profit", "profits", "pnl", "p and l", "profit and loss")
 SILENCE_SECONDS = 2.0
+SCREENSHOT_DIR = BASE_DIR / "screenshots"
 
 
 def download_file(url: str, out_path: Path) -> None:
@@ -382,6 +384,20 @@ def parse_spoken_profit(text: str) -> float | None:
     return numeric
 
 
+def capture_screenshot() -> Path | None:
+    """Capture a full-screen screenshot and return its local file path."""
+    SCREENSHOT_DIR.mkdir(exist_ok=True)
+    timestamp = int(time.time())
+    out_path = SCREENSHOT_DIR / f"trade_{timestamp}.png"
+    try:
+        with mss.mss() as sct:
+            sct.shot(output=str(out_path))
+        return out_path
+    except Exception as exc:
+        print(f"Could not capture screenshot: {exc}")
+        return None
+
+
 def listen_loop() -> None:
     retry_used = False
     while True:
@@ -433,6 +449,7 @@ def listen_loop() -> None:
     trade_title = ""
     trade_description = ""
     trade_profit: float | None = None
+    trade_screenshot_path: Path | None = None
 
     stream = audio.open(
         format=pyaudio.paInt16,
@@ -474,6 +491,11 @@ def listen_loop() -> None:
                         recognizer = KaldiRecognizer(model, sample_rate)
                         print("Recording description... speak now.")
                     elif is_record_profit_command(text):
+                        if trade_screenshot_path is None:
+                            trade_screenshot_path = capture_screenshot()
+                            if trade_screenshot_path:
+                                print(f"Screenshot captured: {trade_screenshot_path}")
+                                speak(tts_engine, "Screenshot captured")
                         speak(tts_engine, "Recording profit")
                         mode = "recording_profit"
                         chunks = []
@@ -539,6 +561,7 @@ def listen_loop() -> None:
                                         account=os.getenv("TRADE_ACCOUNT"),
                                         model=os.getenv("TRADE_MODEL"),
                                         session=os.getenv("TRADE_SESSION"),
+                                        screenshot_path=str(trade_screenshot_path) if trade_screenshot_path else None,
                                     )
                                     speak(tts_engine, "Trade logged to Notion")
                                     
@@ -551,6 +574,7 @@ def listen_loop() -> None:
                                     trade_title = ""
                                     trade_description = ""
                                     trade_profit = None
+                                    trade_screenshot_path = None
                                     
                                 except Exception as exc:
                                     print(f"Failed to log trade to Notion: {exc}")
@@ -561,6 +585,7 @@ def listen_loop() -> None:
                                 trade_title = ""
                                 trade_description = ""
                                 trade_profit = None
+                                trade_screenshot_path = None
                         else:
                             remaining = []
                             if not trade_title:

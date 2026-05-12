@@ -1,6 +1,7 @@
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 import requests
@@ -19,6 +20,19 @@ class NotionTradeLogger:
             "Notion-Version": "2022-06-28",
         }
         self._properties_cache: Optional[dict[str, Any]] = None
+
+    def _file_headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_token}",
+            "Notion-Version": "2026-03-11",
+        }
+
+    def _file_json_headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_token}",
+            "Content-Type": "application/json",
+            "Notion-Version": "2026-03-11",
+        }
 
     def _get_database_properties(self) -> dict[str, Any]:
         if self._properties_cache is not None:
@@ -138,6 +152,36 @@ class NotionTradeLogger:
         related_page_id = self._ensure_relation_page(relation_db_id, value)
         return {"relation": [{"id": related_page_id}]}
 
+    def _upload_file_to_notion(self, file_path: str) -> str:
+        file_name = Path(file_path).name
+
+        create_payload = {
+            "mode": "single_part",
+            "filename": file_name,
+            "content_type": "image/png",
+        }
+        create_response = requests.post(
+            f"{self.base_url}/file_uploads",
+            headers=self._file_json_headers(),
+            json=create_payload,
+            timeout=30,
+        )
+        create_response.raise_for_status()
+        file_upload_id = create_response.json().get("id")
+        if not file_upload_id:
+            raise RuntimeError("Failed to create Notion file upload object.")
+
+        with open(file_path, "rb") as file_stream:
+            send_response = requests.post(
+                f"{self.base_url}/file_uploads/{file_upload_id}/send",
+                headers=self._file_headers(),
+                files={"file": (file_name, file_stream, "image/png")},
+                timeout=60,
+            )
+            send_response.raise_for_status()
+
+        return file_upload_id
+
     def _infer_trade_outcome(
         self,
         description: str,
@@ -177,6 +221,7 @@ class NotionTradeLogger:
         entry_timeframe: Optional[str] = None,
         profit: Optional[float] = None,
         pnl: Optional[str] = None,
+        screenshot_path: Optional[str] = None,
         screenshots: Optional[list] = None,
     ) -> dict[str, Any]:
         del screenshots
@@ -250,6 +295,25 @@ class NotionTradeLogger:
                     properties[matched_name] = update_payload
                     break
 
+        if screenshot_path:
+            screenshot_prop_name = self._find_property_name(["Screenshots", "Screenshot"])
+            if screenshot_prop_name:
+                prop_meta = db_properties[screenshot_prop_name]
+                if prop_meta.get("type") == "files":
+                    try:
+                        file_upload_id = self._upload_file_to_notion(screenshot_path)
+                        properties[screenshot_prop_name] = {
+                            "files": [
+                                {
+                                    "name": Path(screenshot_path).name,
+                                    "type": "file_upload",
+                                    "file_upload": {"id": file_upload_id},
+                                }
+                            ]
+                        }
+                    except Exception as exc:
+                        print(f"Screenshot upload failed, continuing without attachment: {exc}")
+
         payload = {
             "parent": {"database_id": self.database_id},
             "properties": properties,
@@ -281,10 +345,17 @@ class NotionTradeLogger:
             ],
         }
 
+        request_headers = self.headers
+        if screenshot_path:
+            request_headers = {
+                **self.headers,
+                "Notion-Version": "2026-03-11",
+            }
+
         try:
             response = requests.post(
                 f"{self.base_url}/pages",
-                headers=self.headers,
+                headers=request_headers,
                 json=payload,
                 timeout=15,
             )
