@@ -27,6 +27,7 @@ ZIP_PATH = BASE_DIR / MODEL_ZIP
 DESCRIPTION_COMMANDS = ("description", "descriptoin")
 TITLE_COMMANDS = ("title", "titel")
 PROFIT_COMMANDS = ("profit", "profits", "pnl", "p and l", "profit and loss")
+NEW_TRADE_COMMANDS = ("record", "log trade", "new trade", "start trade", "log new trade")
 SILENCE_SECONDS = 2.0
 SCREENSHOT_DIR = BASE_DIR / "screenshots"
 
@@ -147,6 +148,11 @@ def is_record_title_command(text: str) -> bool:
 def is_record_profit_command(text: str) -> bool:
     normalized = " ".join(text.lower().split())
     return any(re.search(rf"\b{re.escape(command)}\b", normalized) for command in PROFIT_COMMANDS)
+
+
+def is_new_trade_command(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    return any(phrase in normalized for phrase in NEW_TRADE_COMMANDS)
 
 
 def is_meaningful_fragment(text: str) -> bool:
@@ -459,10 +465,9 @@ def listen_loop() -> None:
         frames_per_buffer=8000,
     )
 
-    print("\nAvailable commands:")
-    print("  - 'title'       : Capture the trade name")
-    print("  - 'description' : Capture why you took the trade")
-    print("  - 'profit'      : Capture numeric profit/loss")
+    print("\nSay one of these to start logging a trade:")
+    print("  - 'record description'  (or 'record' / 'new trade' / 'log trade')")
+    print("After the trigger: screenshot → describe → title → profit → auto-upload")
     print("\nPress Ctrl+C to stop.\n")
 
     try:
@@ -476,32 +481,16 @@ def listen_loop() -> None:
 
                 if mode == "command":
                     print(f"Final (command): {text}")
-                    if is_record_title_command(text):
-                        speak(tts_engine, "Recording trade title")
-                        mode = "recording_title"
-                        chunks = []
-                        last_speech_time = time.monotonic()
-                        recognizer = KaldiRecognizer(model, sample_rate)
-                        print("Recording title... speak now.")
-                    elif is_record_description_command(text):
-                        speak(tts_engine, "Recording description")
+                    if is_record_description_command(text) or is_new_trade_command(text):
+                        trade_screenshot_path = capture_screenshot()
+                        if trade_screenshot_path:
+                            print(f"Screenshot captured: {trade_screenshot_path}")
+                        speak(tts_engine, "Screenshot taken. Describe your trade.")
                         mode = "recording_description"
                         chunks = []
                         last_speech_time = time.monotonic()
                         recognizer = KaldiRecognizer(model, sample_rate)
-                        print("Recording description... speak now.")
-                    elif is_record_profit_command(text):
-                        if trade_screenshot_path is None:
-                            trade_screenshot_path = capture_screenshot()
-                            if trade_screenshot_path:
-                                print(f"Screenshot captured: {trade_screenshot_path}")
-                                speak(tts_engine, "Screenshot captured")
-                        speak(tts_engine, "Recording profit")
-                        mode = "recording_profit"
-                        chunks = []
-                        last_speech_time = time.monotonic()
-                        recognizer = KaldiRecognizer(model, sample_rate)
-                        print("Recording profit... speak now (say a number).")
+                        print("Listening for description...")
                 else:
                     if is_meaningful_fragment(text):
                         chunks.append(text)
@@ -522,79 +511,70 @@ def listen_loop() -> None:
 
                     if chunks and (time.monotonic() - last_speech_time) >= SILENCE_SECONDS:
                         captured = " ".join(chunks).strip()
-                        
-                        if mode == "recording_title":
-                            trade_title = captured
-                            print(f"\n\nTitle captured: {trade_title}")
-                            speak(tts_engine, "Title saved")
-                        elif mode == "recording_description":
+                        chunks = []
+                        recognizer = KaldiRecognizer(model, sample_rate)
+
+                        if mode == "recording_description":
                             trade_description = captured
-                            print(f"\n\nDescription captured: {trade_description}")
-                            speak(tts_engine, "Description saved")
+                            print(f"\n\nDescription: {trade_description}")
+                            speak(tts_engine, "Got it. What's the title?")
+                            mode = "recording_title"
+                            last_speech_time = time.monotonic()
+                            print("Listening for title...")
+
+                        elif mode == "recording_title":
+                            trade_title = captured
+                            print(f"Title: {trade_title}")
+                            speak(tts_engine, "Got it. What's the profit?")
+                            mode = "recording_profit"
+                            last_speech_time = time.monotonic()
+                            print("Listening for profit...")
+
                         elif mode == "recording_profit":
                             parsed_profit = parse_spoken_profit(captured)
                             if parsed_profit is None:
-                                print("\n\nCould not parse profit as a number. Try again with digits, for example minus 150 or 220.5")
-                                speak(tts_engine, "Could not parse profit as a number")
+                                print("\n\nCould not parse profit. Say a number, e.g. minus 150 or 220.")
+                                speak(tts_engine, "Didn't catch that. What's the profit?")
+                                last_speech_time = time.monotonic()
+                                # Stay in recording_profit
                             else:
                                 trade_profit = parsed_profit
-                                print(f"\n\nProfit captured: {trade_profit}")
-                                speak(tts_engine, "Profit saved")
+                                print(f"Profit: {trade_profit}")
+                                speak(tts_engine, "Uploading trade.")
+                                mode = "command"
+                                last_speech_time = 0.0
 
-                        # Reset for next command
-                        mode = "command"
-                        chunks = []
-                        recognizer = KaldiRecognizer(model, sample_rate)
-                        last_speech_time = 0.0
+                                # Upload
+                                print("\n✓ Uploading to Notion...")
+                                if notion_logger:
+                                    try:
+                                        result = notion_logger.add_trade(
+                                            title=trade_title,
+                                            description=trade_description,
+                                            profit=trade_profit,
+                                            symbol=os.getenv("TRADE_SYMBOL"),
+                                            account=os.getenv("TRADE_ACCOUNT"),
+                                            model=os.getenv("TRADE_MODEL"),
+                                            session=os.getenv("TRADE_SESSION"),
+                                            screenshot_path=str(trade_screenshot_path) if trade_screenshot_path else None,
+                                        )
+                                        speak(tts_engine, "Trade logged. Ready for next.")
+                                        notion_url = result.get("notion_url")
+                                        if notion_url:
+                                            print(f"✓ Trade page: {notion_url}")
+                                    except Exception as exc:
+                                        print(f"Failed to log trade to Notion: {exc}")
+                                        speak(tts_engine, "Error uploading to Notion")
+                                else:
+                                    print("Notion not configured. Trade captured but not uploaded.")
+                                    speak(tts_engine, "Done. Ready for next trade.")
 
-                        # Check if all fields are filled and ready to upload
-                        if trade_title and trade_description and trade_profit is not None:
-                            print("\n✓ All fields captured. Uploading to Notion...")
-                            print("Description will be saved in the page body under the 'Description' section.")
-                            if notion_logger:
-                                try:
-                                    result = notion_logger.add_trade(
-                                        title=trade_title,
-                                        description=trade_description,
-                                        profit=trade_profit,
-                                        symbol=os.getenv("TRADE_SYMBOL"),
-                                        account=os.getenv("TRADE_ACCOUNT"),
-                                        model=os.getenv("TRADE_MODEL"),
-                                        session=os.getenv("TRADE_SESSION"),
-                                        screenshot_path=str(trade_screenshot_path) if trade_screenshot_path else None,
-                                    )
-                                    speak(tts_engine, "Trade logged to Notion")
-                                    
-                                    # Display the Notion URL
-                                    notion_url = result.get("notion_url")
-                                    if notion_url:
-                                        print(f"✓ Trade page: {notion_url}")
-
-                                    # Reset fields for next trade
-                                    trade_title = ""
-                                    trade_description = ""
-                                    trade_profit = None
-                                    trade_screenshot_path = None
-                                    
-                                except Exception as exc:
-                                    print(f"Failed to log trade to Notion: {exc}")
-                                    speak(tts_engine, "Error uploading to Notion")
-                            else:
-                                print("Notion is not configured. Trade data captured but not uploaded.")
-                                # Reset fields for next trade
+                                # Reset fields
                                 trade_title = ""
                                 trade_description = ""
                                 trade_profit = None
                                 trade_screenshot_path = None
-                        else:
-                            remaining = []
-                            if not trade_title:
-                                remaining.append("title")
-                            if not trade_description:
-                                remaining.append("description")
-                            if trade_profit is None:
-                                remaining.append("profit")
-                            print(f"\nReady for next step. Still need: {', '.join(remaining)}\n")
+                                print("\nReady. Say 'record description' to start next trade.\n")
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
