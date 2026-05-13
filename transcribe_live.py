@@ -1,19 +1,20 @@
 import json
+import json
 import os
 import re
 import shutil
 import sys
+import threading
 import time
+import winsound
 import zipfile
 from pathlib import Path
 
 import mss
 import pyaudio
-import pyttsx3
 import requests
 from dotenv import load_dotenv
 from vosk import KaldiRecognizer, Model
-
 from notion_integration import NotionTradeLogger, load_notion_credentials
 
 load_dotenv()
@@ -28,7 +29,7 @@ DESCRIPTION_COMMANDS = ("description", "descriptoin")
 TITLE_COMMANDS = ("title", "titel")
 PROFIT_COMMANDS = ("profit", "profits", "pnl", "p and l", "profit and loss")
 NEW_TRADE_COMMANDS = ("record", "log trade", "new trade", "start trade", "log new trade")
-SILENCE_SECONDS = 2.0
+SILENCE_SECONDS = 1.0
 SCREENSHOT_DIR = BASE_DIR / "screenshots"
 
 
@@ -112,27 +113,32 @@ def ensure_model(force_redownload: bool = False) -> Path:
     return resolve_model_dir(MODEL_DIR)
 
 
-def build_tts_engine() -> pyttsx3.Engine:
-    engine = pyttsx3.init()
-    voices = engine.getProperty("voices")
-
-    female_voice_id = None
-    for voice in voices:
-        details = f"{voice.id} {voice.name}".lower()
-        if "female" in details or "zira" in details or "hazel" in details:
-            female_voice_id = voice.id
-            break
-
-    if female_voice_id is not None:
-        engine.setProperty("voice", female_voice_id)
-
-    engine.setProperty("rate", 175)
-    return engine
+BEEP_READY   = (880, 120)   # high short - ready to speak
+BEEP_SAVED   = (660, 80)    # mid short - field saved
+BEEP_DONE    = (880, 80)    # two-tone done sequence
+BEEP_ERROR   = (300, 200)   # low - error
 
 
-def speak(engine: pyttsx3.Engine, text: str) -> None:
-    engine.say(text)
-    engine.runAndWait()
+def beep(freq: int, duration_ms: int) -> None:
+    winsound.Beep(freq, duration_ms)
+
+
+def beep_ready() -> None:
+    beep(*BEEP_READY)
+
+
+def beep_saved() -> None:
+    beep(*BEEP_SAVED)
+
+
+def beep_done() -> None:
+    beep(660, 80)
+    time.sleep(0.05)
+    beep(880, 120)
+
+
+def beep_error() -> None:
+    beep(*BEEP_ERROR)
 
 
 def is_record_description_command(text: str) -> bool:
@@ -422,7 +428,6 @@ def listen_loop() -> None:
             print(f"Model initialization failed: {exc}")
             print("Retrying model download and load one time...")
             retry_used = True
-    tts_engine = build_tts_engine()
 
     # Initialize Notion integration if credentials are available
     notion_logger = None
@@ -466,8 +471,8 @@ def listen_loop() -> None:
     )
 
     print("\nSay one of these to start logging a trade:")
-    print("  - 'record description'  (or 'record' / 'new trade' / 'log trade')")
-    print("After the trigger: screenshot → describe → title → profit → auto-upload")
+    print("  - 'record'  /  'new trade'  /  'log trade'  /  'record description'")
+    print("Flow: trigger → [beep] describe → [beep] profit → uploads in background")
     print("\nPress Ctrl+C to stop.\n")
 
     try:
@@ -485,7 +490,7 @@ def listen_loop() -> None:
                         trade_screenshot_path = capture_screenshot()
                         if trade_screenshot_path:
                             print(f"Screenshot captured: {trade_screenshot_path}")
-                        speak(tts_engine, "Screenshot taken. Describe your trade.")
+                        beep_ready()
                         mode = "recording_description"
                         chunks = []
                         last_speech_time = time.monotonic()
@@ -517,15 +522,7 @@ def listen_loop() -> None:
                         if mode == "recording_description":
                             trade_description = captured
                             print(f"\n\nDescription: {trade_description}")
-                            speak(tts_engine, "Got it. What's the title?")
-                            mode = "recording_title"
-                            last_speech_time = time.monotonic()
-                            print("Listening for title...")
-
-                        elif mode == "recording_title":
-                            trade_title = captured
-                            print(f"Title: {trade_title}")
-                            speak(tts_engine, "Got it. What's the profit?")
+                            beep_ready()
                             mode = "recording_profit"
                             last_speech_time = time.monotonic()
                             print("Listening for profit...")
@@ -534,47 +531,56 @@ def listen_loop() -> None:
                             parsed_profit = parse_spoken_profit(captured)
                             if parsed_profit is None:
                                 print("\n\nCould not parse profit. Say a number, e.g. minus 150 or 220.")
-                                speak(tts_engine, "Didn't catch that. What's the profit?")
+                                beep_error()
                                 last_speech_time = time.monotonic()
                                 # Stay in recording_profit
                             else:
                                 trade_profit = parsed_profit
                                 print(f"Profit: {trade_profit}")
-                                speak(tts_engine, "Uploading trade.")
+                                beep_done()
                                 mode = "command"
                                 last_speech_time = 0.0
 
-                                # Upload
-                                print("\n✓ Uploading to Notion...")
-                                if notion_logger:
-                                    try:
-                                        result = notion_logger.add_trade(
-                                            title=trade_title,
-                                            description=trade_description,
-                                            profit=trade_profit,
-                                            symbol=os.getenv("TRADE_SYMBOL"),
-                                            account=os.getenv("TRADE_ACCOUNT"),
-                                            model=os.getenv("TRADE_MODEL"),
-                                            session=os.getenv("TRADE_SESSION"),
-                                            screenshot_path=str(trade_screenshot_path) if trade_screenshot_path else None,
-                                        )
-                                        speak(tts_engine, "Trade logged. Ready for next.")
-                                        notion_url = result.get("notion_url")
-                                        if notion_url:
-                                            print(f"✓ Trade page: {notion_url}")
-                                    except Exception as exc:
-                                        print(f"Failed to log trade to Notion: {exc}")
-                                        speak(tts_engine, "Error uploading to Notion")
-                                else:
-                                    print("Notion not configured. Trade captured but not uploaded.")
-                                    speak(tts_engine, "Done. Ready for next trade.")
+                                # Snapshot fields for background thread
+                                _title       = trade_title
+                                _description = trade_description
+                                _profit      = trade_profit
+                                _screenshot  = trade_screenshot_path
 
-                                # Reset fields
+                                # Reset immediately so next trade can start
                                 trade_title = ""
                                 trade_description = ""
                                 trade_profit = None
                                 trade_screenshot_path = None
-                                print("\nReady. Say 'record description' to start next trade.\n")
+                                print("\nReady. Say 'record' to start next trade.\n")
+
+                                # Upload in background
+                                def _upload(title, description, profit, screenshot_path):
+                                    auto_title = title or f"Trade {time.strftime('%H:%M')}"
+                                    if notion_logger:
+                                        try:
+                                            result = notion_logger.add_trade(
+                                                title=auto_title,
+                                                description=description,
+                                                profit=profit,
+                                                symbol=os.getenv("TRADE_SYMBOL"),
+                                                account=os.getenv("TRADE_ACCOUNT"),
+                                                model=os.getenv("TRADE_MODEL"),
+                                                session=os.getenv("TRADE_SESSION"),
+                                                screenshot_path=screenshot_path,
+                                            )
+                                            notion_url = result.get("notion_url")
+                                            print(f"\n✓ Trade logged: {notion_url or 'no URL'}\n")
+                                        except Exception as exc:
+                                            print(f"\n✗ Notion upload failed: {exc}\n")
+                                    else:
+                                        print("\nNotion not configured. Trade captured but not uploaded.\n")
+
+                                threading.Thread(
+                                    target=_upload,
+                                    args=(_title, _description, _profit, str(_screenshot) if _screenshot else None),
+                                    daemon=True,
+                                ).start()
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
