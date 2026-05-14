@@ -416,6 +416,74 @@ def parse_spoken_trade_date(text: str, now: datetime | None = None) -> str | Non
     if not normalized:
         return None
 
+    # Vosk often prefixes phrases with filler like "the".
+    tokens = normalized.split()
+    while tokens and tokens[0] in {"the", "uh", "um", "a", "an"}:
+        tokens = tokens[1:]
+    if not tokens:
+        return None
+    normalized = " ".join(tokens)
+
+    ordinal_words = {
+        "first": 1,
+        "second": 2,
+        "third": 3,
+        "fourth": 4,
+        "fifth": 5,
+        "sixth": 6,
+        "seventh": 7,
+        "eighth": 8,
+        "ninth": 9,
+        "tenth": 10,
+        "eleventh": 11,
+        "twelfth": 12,
+        "thirteenth": 13,
+        "fourteenth": 14,
+        "fifteenth": 15,
+        "sixteenth": 16,
+        "seventeenth": 17,
+        "eighteenth": 18,
+        "nineteenth": 19,
+        "twentieth": 20,
+        "twenty first": 21,
+        "twenty second": 22,
+        "twenty third": 23,
+        "twenty fourth": 24,
+        "twenty fifth": 25,
+        "twenty sixth": 26,
+        "twenty seventh": 27,
+        "twenty eighth": 28,
+        "twenty ninth": 29,
+        "thirtieth": 30,
+        "thirty first": 31,
+    }
+
+    def parse_year(words: list[str]) -> int | None:
+        if not words:
+            return None
+        if all(w.isdigit() for w in words):
+            joined = "".join(words)
+            if len(joined) == 4:
+                return int(joined)
+
+        compact = " ".join(w for w in words if w != "and")
+        # Handle common spoken style: "twenty twenty six" -> 2026.
+        if compact.startswith("twenty "):
+            tail = compact[len("twenty ") :]
+            tail_value = words_to_number(tail)
+            if tail_value is not None:
+                tail_int = int(tail_value)
+                if 0 <= tail_int <= 99:
+                    return 2000 + tail_int
+
+        parsed = words_to_number(compact)
+        if parsed is None:
+            return None
+        year_int = int(parsed)
+        if 100 <= year_int < 1000:
+            return 2000 + year_int
+        return year_int
+
     if normalized in {"today"}:
         return reference.strftime("%Y-%m-%d")
     if normalized in {"yesterday"}:
@@ -445,32 +513,40 @@ def parse_spoken_trade_date(text: str, now: datetime | None = None) -> str | Non
     day: int | None = None
     year: int | None = None
 
-    numeric_tokens: list[str] = []
-    for token in tokens[1:]:
-        cleaned = re.sub(r"(st|nd|rd|th)$", "", token)
-        if cleaned:
-            numeric_tokens.append(cleaned)
-
-    if not numeric_tokens:
+    date_tokens = [token for token in tokens[1:] if token != "of"]
+    if not date_tokens:
         return None
 
-    if numeric_tokens[0].isdigit():
-        day = int(numeric_tokens[0])
-    else:
-        parsed_day = words_to_number(numeric_tokens[0])
-        if parsed_day is not None:
-            day = int(parsed_day)
+    # Try two-word ordinals first: "twenty sixth".
+    if len(date_tokens) >= 2:
+        ordinal_two = f"{date_tokens[0]} {date_tokens[1]}"
+        if ordinal_two in ordinal_words:
+            day = ordinal_words[ordinal_two]
+            date_tokens = date_tokens[2:]
 
     if day is None:
+        if date_tokens[0].isdigit():
+            day = int(date_tokens[0])
+            date_tokens = date_tokens[1:]
+        elif date_tokens[0] in ordinal_words:
+            day = ordinal_words[date_tokens[0]]
+            date_tokens = date_tokens[1:]
+        else:
+            cleaned = re.sub(r"(st|nd|rd|th)$", "", date_tokens[0])
+            if cleaned.isdigit():
+                day = int(cleaned)
+                date_tokens = date_tokens[1:]
+            else:
+                parsed_day = words_to_number(cleaned)
+                if parsed_day is not None:
+                    day = int(parsed_day)
+                    date_tokens = date_tokens[1:]
+
+    if day is None or not (1 <= day <= 31):
         return None
 
-    if len(numeric_tokens) >= 2:
-        if numeric_tokens[1].isdigit():
-            year = int(numeric_tokens[1])
-        else:
-            parsed_year = words_to_number(" ".join(numeric_tokens[1:]))
-            if parsed_year is not None:
-                year = int(parsed_year)
+    if date_tokens:
+        year = parse_year(date_tokens)
 
     if year is None:
         year = reference.year
