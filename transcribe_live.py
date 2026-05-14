@@ -1,5 +1,4 @@
 import json
-import json
 import os
 import re
 import shutil
@@ -8,6 +7,7 @@ import threading
 import time
 import winsound
 import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import mss
@@ -31,6 +31,20 @@ PROFIT_COMMANDS = ("profit", "profits", "pnl", "p and l", "profit and loss")
 NEW_TRADE_COMMANDS = ("record", "log trade", "new trade", "start trade", "log new trade")
 SILENCE_SECONDS = 1.0
 SCREENSHOT_DIR = BASE_DIR / "screenshots"
+MONTH_NAMES = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
 
 
 def download_file(url: str, out_path: Path) -> None:
@@ -396,6 +410,78 @@ def parse_spoken_profit(text: str) -> float | None:
     return numeric
 
 
+def parse_spoken_trade_date(text: str, now: datetime | None = None) -> str | None:
+    reference = now or datetime.now()
+    normalized = " ".join(text.lower().replace(",", " ").split())
+    if not normalized:
+        return None
+
+    if normalized in {"today"}:
+        return reference.strftime("%Y-%m-%d")
+    if normalized in {"yesterday"}:
+        return (reference - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    tokens = normalized.split()
+    if tokens[:1] == ["last"] and len(tokens) >= 2:
+        weekdays = {
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6,
+        }
+        weekday = weekdays.get(tokens[1])
+        if weekday is not None:
+            days_back = (reference.weekday() - weekday) % 7
+            days_back = 7 if days_back == 0 else days_back
+            return (reference - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+    month = MONTH_NAMES.get(tokens[0]) if tokens else None
+    if month is None:
+        return None
+
+    day: int | None = None
+    year: int | None = None
+
+    numeric_tokens: list[str] = []
+    for token in tokens[1:]:
+        cleaned = re.sub(r"(st|nd|rd|th)$", "", token)
+        if cleaned:
+            numeric_tokens.append(cleaned)
+
+    if not numeric_tokens:
+        return None
+
+    if numeric_tokens[0].isdigit():
+        day = int(numeric_tokens[0])
+    else:
+        parsed_day = words_to_number(numeric_tokens[0])
+        if parsed_day is not None:
+            day = int(parsed_day)
+
+    if day is None:
+        return None
+
+    if len(numeric_tokens) >= 2:
+        if numeric_tokens[1].isdigit():
+            year = int(numeric_tokens[1])
+        else:
+            parsed_year = words_to_number(" ".join(numeric_tokens[1:]))
+            if parsed_year is not None:
+                year = int(parsed_year)
+
+    if year is None:
+        year = reference.year
+
+    try:
+        parsed = datetime(year=year, month=month, day=day)
+    except ValueError:
+        return None
+    return parsed.strftime("%Y-%m-%d")
+
+
 def capture_screenshot() -> Path | None:
     """Capture a full-screen screenshot and return its local file path."""
     SCREENSHOT_DIR.mkdir(exist_ok=True)
@@ -457,8 +543,8 @@ def listen_loop() -> None:
     last_speech_time = 0.0
     
     # Trade fields accumulated across recordings
-    trade_title = ""
     trade_description = ""
+    trade_date = ""
     trade_profit: float | None = None
     trade_screenshot_path: Path | None = None
 
@@ -472,7 +558,7 @@ def listen_loop() -> None:
 
     print("\nSay one of these to start logging a trade:")
     print("  - 'record'  /  'new trade'  /  'log trade'  /  'record description'")
-    print("Flow: trigger → [beep] describe → [beep] profit → uploads in background")
+    print("Flow: trigger → [beep] describe → [beep] date → [beep] profit → uploads in background")
     print("\nPress Ctrl+C to stop.\n")
 
     try:
@@ -523,9 +609,23 @@ def listen_loop() -> None:
                             trade_description = captured
                             print(f"\n\nDescription: {trade_description}")
                             beep_ready()
-                            mode = "recording_profit"
+                            mode = "recording_date"
                             last_speech_time = time.monotonic()
-                            print("Listening for profit...")
+                            print("Listening for trade date (e.g. april 24, yesterday, last friday)...")
+
+                        elif mode == "recording_date":
+                            parsed_date = parse_spoken_trade_date(captured)
+                            if parsed_date is None:
+                                print("\n\nCould not parse date. Try examples: april 24, april 24 2026, yesterday.")
+                                beep_error()
+                                last_speech_time = time.monotonic()
+                            else:
+                                trade_date = parsed_date
+                                print(f"Trade date: {trade_date}")
+                                beep_ready()
+                                mode = "recording_profit"
+                                last_speech_time = time.monotonic()
+                                print("Listening for profit...")
 
                         elif mode == "recording_profit":
                             parsed_profit = parse_spoken_profit(captured)
@@ -542,26 +642,27 @@ def listen_loop() -> None:
                                 last_speech_time = 0.0
 
                                 # Snapshot fields for background thread
-                                _title       = trade_title
                                 _description = trade_description
+                                _trade_date  = trade_date
                                 _profit      = trade_profit
                                 _screenshot  = trade_screenshot_path
 
                                 # Reset immediately so next trade can start
-                                trade_title = ""
                                 trade_description = ""
+                                trade_date = ""
                                 trade_profit = None
                                 trade_screenshot_path = None
                                 print("\nReady. Say 'record' to start next trade.\n")
 
                                 # Upload in background
-                                def _upload(title, description, profit, screenshot_path):
-                                    auto_title = title or f"Trade {time.strftime('%H:%M')}"
+                                def _upload(description, trade_date, profit, screenshot_path):
+                                    auto_title = f"Trade {time.strftime('%H:%M')}"
                                     if notion_logger:
                                         try:
                                             result = notion_logger.add_trade(
                                                 title=auto_title,
                                                 description=description,
+                                                trade_date=trade_date,
                                                 profit=profit,
                                                 symbol=os.getenv("TRADE_SYMBOL"),
                                                 account=os.getenv("TRADE_ACCOUNT"),
@@ -578,7 +679,7 @@ def listen_loop() -> None:
 
                                 threading.Thread(
                                     target=_upload,
-                                    args=(_title, _description, _profit, str(_screenshot) if _screenshot else None),
+                                    args=(_description, _trade_date, _profit, str(_screenshot) if _screenshot else None),
                                     daemon=True,
                                 ).start()
     except KeyboardInterrupt:

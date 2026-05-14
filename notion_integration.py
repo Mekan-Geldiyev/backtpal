@@ -214,6 +214,7 @@ class NotionTradeLogger:
         self,
         title: str,
         description: str,
+        trade_date: Optional[str] = None,
         symbol: Optional[str] = None,
         account: Optional[str] = None,
         model: Optional[str] = None,
@@ -226,7 +227,7 @@ class NotionTradeLogger:
     ) -> dict[str, Any]:
         del screenshots
 
-        today_date = datetime.now().strftime("%Y-%m-%d")
+        effective_trade_date = trade_date or datetime.now().strftime("%Y-%m-%d")
         title_property = self._get_title_property_name()
         outcome_label, rr_value = self._infer_trade_outcome(
             description=description,
@@ -240,7 +241,7 @@ class NotionTradeLogger:
             "symbol": symbol,
             "session": session,
             "entry_timeframe": entry_timeframe,
-            "entry_exit_date": today_date,
+            "entry_exit_date": effective_trade_date,
             "profit": profit,
             "status": "Closed",
             "actual_rr_achieved": rr_value,
